@@ -1,1 +1,3 @@
-# bup-dosage-and-retention
+# THE ASSOCIATION BETWEEN BUPRENORPHINE DOSES ABOVE 16 MILLIGRAMS AND TREATMENT RETENTION IN A MULTI-PAYER NATIONAL SAMPLE IN THE UNITED STATES, 2014-2021
+These documents include codes for data extraction and cleaning, primary and sensitivity analyses using regression, and figures, as well output files. 
+
