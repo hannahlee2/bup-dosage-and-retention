@@ -1,0 +1,189 @@
+---
+title: "Forest plot for results with washout period"
+author: "Huiru Dong and Hannah Lee"
+date: "2024-04-23"
+output: html_document
+---
+
+
+```{r}
+# Load all the libraries
+library(data.table)
+library(dplyr)
+library(forestplot)
+library(RColorBrewer)
+library(ggplot2)
+library(patchwork)
+library(forcats)
+library(lemon)
+
+# Folder that store the data
+dat.folder = "~/Library/CloudStorage/OneDrive-SharedLibraries-MassGeneralBrigham/Data Repository - [P7] Buprenorphine dosagey/Data/"
+result.folder = "~/Library/CloudStorage/OneDrive-SharedLibraries-MassGeneralBrigham/Data Repository - [P7] Buprenorphine dosage/Result/"
+```
+
+
+Read in the multivariable model results
+```{r}
+result = fread(paste(result.folder, "combined_multivariable_M18_nochangedosage_revision.csv", sep=''))
+```
+
+
+Data cleaning
+```{r}
+# Select the first nine rows for each group defined by 'Outcome_Period'
+dosage <- result %>%
+  group_by(Outcome_Period) %>%
+  slice_head(n = 7) %>% # Select the first nine rows per group
+  mutate(Variable=c("4","8","12",
+                    "20","24","32","40"),
+         Month = case_when(
+                    Outcome_Period == "1M" ~ "1 month",
+                    Outcome_Period == "3M" ~ "3 months",
+                    Outcome_Period == "6M" ~ "6 months",
+                    Outcome_Period == "12M" ~ "12 months",
+                    Outcome_Period == "18M" ~ "18 months")) %>%
+  rename(
+    OR = `Odds ratio`,
+    lower = `2.5 %`,
+    upper = `97.5 %`)
+
+# Change reference levels
+dosage$Variable <- factor(dosage$Variable,
+                               levels=c("40","32","24","20","12", "8","4"))
+dosage$Month <- factor(dosage$Month, levels=c("1 month", "3 months", "6 months", "12 months", "18 months"))
+```
+
+
+
+Make the forest plot with unseparated outcomes
+```{r}
+forestplot= ggplot(dosage, aes(x = OR, y = Variable, color = Month)) +
+  geom_vline(aes(xintercept = 1), linewidth = .25, linetype = "dashed") +
+  geom_errorbarh(data = filter(dosage, Month == "1 month"), aes(xmax = upper, xmin = lower), linewidth = .5, height = .1, color = "gray50") +
+  geom_point(data = filter(dosage, Month == "1 month"), size = 3) +
+  
+  geom_errorbarh(data = filter(dosage, Month == "3 months"), aes(xmax = upper, xmin = lower), linewidth = .5, height = .1, color = "gray50") +
+  geom_point(data = filter(dosage, Month == "3 months"), size = 3) +
+  
+   geom_errorbarh(data = filter(dosage, Month == "6 months"), aes(xmax = upper, xmin = lower), linewidth = .5, height = .1, color = "gray50") +
+  geom_point(data = filter(dosage, Month == "6 months"), size = 3) +
+  
+     geom_errorbarh(data = filter(dosage, Month == "12 months"), aes(xmax = upper, xmin = lower), linewidth = .5, height = .1, color = "gray50") +
+  geom_point(data = filter(dosage, Month == "12 months"), size = 3) +
+  
+   geom_errorbarh(data = filter(dosage, Month == "18 months"), aes(xmax = upper, xmin = lower), linewidth = .5, height = .1, color = "gray50") +
+  geom_point(data = filter(dosage, Month == "18 months"), size = 3) +
+  
+  scale_x_continuous(breaks = seq(0,5,0.5) ) +
+  coord_trans(x = "log10") +
+  scale_color_manual(
+    values = c("1 month" = "#999999", "3 months" = "#E69F00", "6 months" = "#009E73", 
+               "12 months" = "#0072B2", "18 months" = "#D55E00"),
+    labels = c("1 month", "3 months", "6 months", "12 months", "18 months"),
+    breaks = c("1 month", "3 months", "6 months", "12 months", "18 months")) +
+  theme_bw() +
+  ylab("")+
+  xlab("Odds ratio") +
+  theme(legend.position="top",
+ panel.grid.major = element_blank(),
+ panel.grid.minor = element_blank(),
+ panel.background = element_blank(), 
+ legend.text =element_text(size=11, face="bold"),
+ legend.title= element_blank(),
+ axis.text=element_text(size=11, face="bold", colour="black"),
+ axis.title=element_text(size=11, face="bold", colour="black"))
+
+
+ggsave(paste(result.folder,'Dosage_M18_nodosagechange.svg', sep=''), plot=forestplot)
+  
+```
+
+Prepare data for forest plot with separated outcomes
+```{r}
+dosage_tidied <- dosage %>%
+  mutate(
+    OR_CI = sprintf("%.2f (%.2f, %.2f)", OR, lower, upper)  # Create formatted OR (CI) text
+  ) %>%
+  arrange(Month, (desc(Variable)))
+
+min_val <- min(dosage_tidied$lower)
+max_val <- max(dosage_tidied$upper)
+```
+
+Forest plot with separate outcomes
+```{r}
+# https://stackoverflow.com/questions/73250489/how-to-align-table-with-forest-plot-ggplot2
+
+# Define the forest plot
+forest <- ggplot(
+  data = dosage_tidied,
+  aes(x = Variable, y = OR, ymin = lower, ymax = upper)
+) +
+  geom_hline(yintercept = 1, colour = "gray50", linetype = "dashed") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), linewidth = .5, height = .1) +
+  scale_y_continuous(
+    breaks = seq(0.2, 2.2, by = 0.4),
+    limits = c(0.2, 2.2),
+    trans = "log10"
+  ) +
+  geom_point(color = "#123499", size = 3) +
+  xlab("Daily dose (milligrams)") +
+  ylab("Decreased Odds of Retention     Increased Odds of Retention") +
+  facet_rep_wrap(~ Month, scales = 'free_y', ncol = 1, repeat.tick.labels = 'left') +
+  theme_classic() +
+  theme(
+    panel.background = element_blank(), 
+    strip.background = element_rect(colour = NA, fill = NA),
+    strip.text.y = element_text(face = "bold", , hjust = 0, size = 12),
+    strip.text.x = element_text(hjust = 0, size = 12),
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none",
+    axis.text = element_text(size = 12),
+    axis.title.y = element_text(face = 'bold', size = 12),
+    axis.title.x = element_text(size = 10, hjust = 1.15),
+    plot.title = element_text(size = 13, vjust = -6, hjust = 0.5)
+  ) +
+  coord_flip()  +
+  theme(axis.title.x = element_text(margin = margin(t = 10)), 
+        axis.title.y = element_text(margin = margin(r = 10)),
+        plot.title = element_text(face = "bold")) +
+  ggtitle("Adjusted odds ratio relative to 16 milligrams")
+
+dat_table <- dosage_tidied %>%
+  select(Variable, Month, OR_CI) %>%
+  tidyr::pivot_longer(c(OR_CI), names_to = "stat") %>%
+  mutate(stat = factor(stat, levels = c("OR_CI")))
+
+# Define the table base
+table_base <- ggplot(dat_table, aes(stat, Variable, label = value)) +
+  geom_text(size = 4) +
+  scale_x_discrete(position = "top", labels = c("")) +
+  facet_wrap(~ Month, strip.position = "top", ncol = 1, scales = "free_y", 
+             labeller = labeller(Month = c(`1 month` = "aOR (95% CI)", 
+                                            `3 months` = "", 
+                                            `6 months` = "", 
+                                            `12 months` = "", 
+                                            `18 months` = ""))) +
+  labs(y = NULL, x = NULL) +
+  theme_classic() +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 12, face ="bold"),
+    strip.text.x = element_text(face = "bold", size = 12),
+    strip.text.y.left = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_text(face = "bold"),
+  )+ ggtitle("") 
+
+# Combine forest plot and table
+forestplot <- forest + table_base + plot_layout(widths = c(5, 2)) 
+
+ggsave(paste(result.folder,'Dosage_M18_nodosagechange_revision.svg', sep=''), plot=forestplot, width = 8, height = 12)
+```
+

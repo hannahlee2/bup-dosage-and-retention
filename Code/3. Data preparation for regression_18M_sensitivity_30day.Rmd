@@ -1,0 +1,326 @@
+---
+title: "Data preparation for regression analysis_Sensitivity 30 days"
+author: "Huiru Dong"
+date: "2024-04-30"
+output: html_document
+---
+
+
+```{r}
+# Load all the libraries
+library(data.table)
+library(dplyr)
+
+# Folder that store the data
+dat.folder = "C:\\Users\\hd820\\OneDrive - Mass General Brigham\\Data Repository\\IQVIA_analysis\\[P7] Buprenorphine dosage\\Data\\"
+```
+
+
+Read and check the episode and RXs records
+```{r}
+# Read the full dataset: episode merged with RXs records
+RX_episode = fread(paste(dat.folder,"episodes_RX_with_max_dosage_M18_Sensitivity Day30.csv", sep=''))
+setorder(RX_episode,PATIENT_ID,episode.start,SVC_DT)
+# Check number of records
+nrow(RX_episode)
+# 15,606,863
+
+# Check unique number of episodes
+length(unique(RX_episode$uuid))
+# 1,213,812 episodes
+```
+
+
+```{r}
+# Check how many episodes involved a max dosage variable >40
+check=RX_episode[RX_episode$max_dosage_1M>40 | RX_episode$max_dosage_3M>40 | RX_episode$max_dosage_6M>40 |
+                RX_episode$max_dosage_12M>40 | RX_episode$max_dosage_18M>40,]
+check2 = RX_episode[RX_episode$uuid %in% check$uuid,c("PATIENT_ID","episode.start","episode.end","SVC_DT_date","DAYS_SUPPLY_CNT","dosage","max_dosage_1M","max_dosage_3M","max_dosage_6M","max_dosage_12M","max_dosage_18M")]
+length(unique(check$uuid))
+# 4242 episodes with max dosage >40 due to overlapping days
+nrow(check2)
+# 192399 rows
+```
+
+
+SAMPLE RESTRICTION:
+Remove these max dosage>40 episodes
+```{r}
+RX_episode2 = RX_episode[!(RX_episode$uuid %in% check$uuid),]
+nrow(RX_episode2)
+# 15414464
+length(unique(RX_episode2$uuid))
+# 1209570
+```
+
+SAMPLE RESTRICTION:
+New restriction: check how many episode started before April 1, 2020
+```{r}
+nrow(RX_episode2[RX_episode2$episode.start < "2020-04-01",])
+# 14182620 before Apr 1, 2020
+
+RX_episode3 = RX_episode2[RX_episode2$episode.start < "2020-04-01",]
+
+# Double check
+nrow(RX_episode3)
+min(unique(RX_episode3$episode.start))
+max(unique(RX_episode3$episode.start))
+length(unique(RX_episode3$uuid))
+# 1018638
+```
+After sample restriction (Apr 1), we have 1018638 episodes 14182620 records
+
+
+
+POTENTIAL SAMPLE RESTRICTION:
+We will define an indicator: 180 days washout period, only include episodes without treatment within 180 days
+```{r}
+episode.ID = RX_episode3[,c("PATIENT_ID","episode.start", "episode.end")]
+episode.ID = episode.ID[!duplicated(episode.ID)]
+setorder(episode.ID, PATIENT_ID,episode.start)
+
+# For patients with multiple episode, look at the gap between episode 
+episode.ID = episode.ID %>%
+  group_by(PATIENT_ID) %>%
+  mutate(previous_end = lag(episode.end, n=1, order_by=PATIENT_ID))
+
+episode.ID$lag = ifelse(is.na(episode.ID$previous_end),99999,
+                        (episode.ID$episode.start-episode.ID$previous_end))
+episode.ID$keep_washout180 = ifelse(episode.ID$lag>180,1,0)
+
+table(episode.ID$keep_washout180, useNA="always")
+
+# Keep only useful variables
+episode.ID = episode.ID[,c("PATIENT_ID","episode.start","keep_washout180")]
+
+```
+
+Keep the analytical episode sample data
+```{r}
+# keep only one record per episode, no need to have all RXs 
+episode = RX_episode3 %>%
+   group_by(PATIENT_ID, episode.start) %>%
+   arrange(PATIENT_ID,episode.start,SVC_DT) %>%
+   filter(row_number()==1)
+nrow(episode)
+
+# Merge in the washout indicator
+episode = merge(episode, episode.ID, by=c("PATIENT_ID","episode.start"), all.x=TRUE)
+
+# keep useful variables
+episode.mod = episode[,c("PATIENT_ID","episode.start","episode.end","episode.duration","PAY_TYP_DESC",
+                         "max_dosage_1M","max_dosage_3M","max_dosage_6M","max_dosage_12M","max_dosage_18M",
+                         "keep_washout180")]
+setorder(episode.mod, PATIENT_ID, episode.start)
+```
+```{r}
+# Clean up
+rm(check, check2, episode.ID, episode, RX_episode, RX_episode2)
+```
+
+Double check the max dosage variables 
+```{r}
+# For episodes lasted <1M, max dosage at 1M, 3M, 6M, 12M, and 18M should be equal
+check.1M = episode.mod[episode.mod$episode.duration<30,]
+check.1M$mean = (check.1M$max_dosage_1M+
+                    check.1M$max_dosage_3M+
+                    check.1M$max_dosage_6M+
+                    check.1M$max_dosage_12M+
+                    check.1M$max_dosage_18M)/5
+check.1M$flag = ifelse(round(check.1M$mean,2)!=round(check.1M$max_dosage_1M,2), 1,0)
+table(check.1M$flag, useNA="always")
+
+# For episodes lasted <3M, max dosage at 3M, 6M, 12M, 18M should be equal
+check.3M = episode.mod[episode.mod$episode.duration<30*3,]
+check.3M$mean = (check.3M$max_dosage_3M+
+                 check.3M$max_dosage_6M+
+                 check.3M$max_dosage_12M+
+                 check.3M$max_dosage_18M)/4
+check.3M$flag = ifelse(round(check.3M$mean,2)!=round(check.3M$max_dosage_3M,2), 1,0)
+table(check.3M$flag, useNA="always")
+
+# For episodes lasted <6M, max dosage at 6M, 12M, 18M should be equal
+check.6M = episode.mod[episode.mod$episode.duration<30*6,]
+check.6M$mean = (check.6M$max_dosage_6M+
+                 check.6M$max_dosage_12M+
+                 check.6M$max_dosage_18M)/3
+check.6M$flag = ifelse(round(check.6M$mean,2)!=round(check.6M$max_dosage_6M,2), 1,0)
+table(check.6M$flag, useNA="always")
+
+# For episodes lasted <12M, max dosage at 12M and 18M should be equal
+check.12M = episode.mod[episode.mod$episode.duration<30*12,]
+check.12M$flag = ifelse(check.12M$max_dosage_12M!=check.12M$max_dosage_18M, 1,0)
+table(check.12M$flag, useNA="always")
+```
+
+
+Merge in patient demographic data
+```{r}
+# Read in patient data
+d_patient = fread(file = "\\\\rfawin.partners.org\\mgh-itafisma\\IQVIA\\Patient.gz",
+                  select = c("PATIENT_ID","PAT_BRTH_YR_NBR","PAT_GENDER_CD","PAT_ETHNICITY"))
+setorder(d_patient, PATIENT_ID)
+
+# Merge patient information with episode data
+episode.mod2 = merge (episode.mod, d_patient, by = c("PATIENT_ID"), all.x = TRUE)
+
+```
+
+
+
+SAMPLE RESTRICTION
+Remove records with missing sex 
+```{r}
+table(episode.mod2$PAT_GENDER_CD, useNA="always")
+episode.mod3 = episode.mod2[episode.mod2$PAT_GENDER_CD!="U",]
+table(episode.mod3$PAT_GENDER_CD, useNA="always")
+nrow(episode.mod3)
+```
+
+SAMPLE RESTRICTION
+Restrict the episodes to those with age 18-85
+```{r}
+episode.mod3$age = year(episode.mod3$episode.start)-episode.mod3$PAT_BRTH_YR_NBR
+summary(episode.mod3$age)
+nrow(episode.mod3[episode.mod3$age<18 | is.na(episode.mod3$age),])
+
+# Clean up the age variable, keeping 18-85 years old
+episode.mod4 = episode.mod3[episode.mod3$age>=18 & episode.mod3$age<=85 & !is.na(episode.mod3$age),]
+nrow(episode.mod4)
+
+# Create age categories 
+episode.mod4$age_cat = 
+  ifelse(episode.mod4$age>=18 & episode.mod4$age<=24,"1. 18-24",
+    ifelse(episode.mod4$age>=25 & episode.mod4$age<=34,"2.25-34",
+           ifelse(episode.mod4$age>=35 & episode.mod4$age<=44, "3.35-44",
+                  ifelse(episode.mod4$age>=45 & episode.mod4$age<=64,"4.45-64",
+                         "5.65+"))))
+table(episode.mod4$age_cat, useNA="always")
+summary(episode.mod4$age)
+```
+
+Clean up the race/ethnicity variable
+```{r}
+table(episode.mod4$PAT_ETHNICITY, useNA="always")
+# Combine unknown and unspecified
+episode.mod4$race = ifelse(episode.mod4$PAT_ETHNICITY %in% c("UNKNOWN","UNSPECIFIED"),"UNKNOWN",episode.mod4$PAT_ETHNICITY)
+
+table(episode.mod4$race, episode.mod4$PAT_ETHNICITY,useNA="always")
+```
+
+Check payment type
+```{r}
+table(episode.mod4$PAY_TYP_DESC, useNA="always")
+episode.mod4$payment = ifelse(episode.mod4$PAY_TYP_DESC %in% c("MEDICARE PART D","MEDICARE"),
+                              "MEDICARE",episode.mod4$PAY_TYP_DESC)
+table(episode.mod4$payment,episode.mod4$PAY_TYP_DESC, useNA="always")
+```
+
+Generate year variable
+```{r}
+episode.mod4$year = year(episode.mod4$episode.start)
+```
+
+Generate outcome variable
+```{r}
+episode.mod4$outcome.1M = ifelse(episode.mod4$episode.duration>=30,1,0)
+episode.mod4$outcome.3M = ifelse(episode.mod4$episode.duration>=30*3,1,0)
+episode.mod4$outcome.6M = ifelse(episode.mod4$episode.duration>=30*6,1,0)
+episode.mod4$outcome.12M = ifelse(episode.mod4$episode.duration>=30*12,1,0)
+episode.mod4$outcome.18M = ifelse(episode.mod4$episode.duration>=30*18,1,0)
+
+
+# Double check
+table(episode.mod4$outcome.1M, useNA="always")
+table(episode.mod4$outcome.3M, useNA="always")
+table(episode.mod4$outcome.6M, useNA="always")
+table(episode.mod4$outcome.12M, useNA="always")
+table(episode.mod4$outcome.18M, useNA="always")
+
+
+summary(episode.mod4[episode.mod4$outcome.1M==1,]$episode.duration)
+summary(episode.mod4[episode.mod4$outcome.3M==1,]$episode.duration)
+summary(episode.mod4[episode.mod4$outcome.6M==1,]$episode.duration)
+summary(episode.mod4[episode.mod4$outcome.12M==1,]$episode.duration)
+summary(episode.mod4[episode.mod4$outcome.18M==1,]$episode.duration)
+```
+
+
+Generate max dosage categorical variables
+```{r}
+
+# Create categorical variable for the 1M, 3M, 6M, 12M, and 18M variables
+episode.mod4$max_dosage_1M_cat = 
+  cut(episode.mod4$max_dosage_1M, 
+      breaks = c(0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40),
+      labels = c('1.0-4', '2.5-8', '3.9-12', '4.13-16', '5.17-20', '6.21-24', '7.25-28', '8.29-32', '9.33-36', '10.37-40'))
+
+# Double check
+summary(episode.mod4$max_dosage_1M)
+table(episode.mod4$max_dosage_1M_cat, useNA="always")
+summary(episode.mod4[episode.mod4$max_dosage_1M_cat=="4.13-16",]$max_dosage_1M)
+
+
+episode.mod4$max_dosage_3M_cat = 
+  cut(episode.mod4$max_dosage_3M, 
+      breaks = c(0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40),
+      labels = c('1.0-4', '2.5-8', '3.9-12', '4.13-16', '5.17-20', '6.21-24', '7.25-28', '8.29-32', '9.33-36', '10.37-40'))
+
+# Double check
+summary(episode.mod4$max_dosage_3M)
+table(episode.mod4$max_dosage_3M_cat, useNA="always")
+summary(episode.mod4[episode.mod4$max_dosage_3M_cat=="4.13-16",]$max_dosage_3M)
+
+
+episode.mod4$max_dosage_6M_cat = 
+  cut(episode.mod4$max_dosage_6M, 
+      breaks = c(0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40),
+      labels = c('1.0-4', '2.5-8', '3.9-12', '4.13-16', '5.17-20', '6.21-24', '7.25-28', '8.29-32', '9.33-36', '10.37-40'))
+
+# Double check
+summary(episode.mod4$max_dosage_6M)
+table(episode.mod4$max_dosage_6M_cat, useNA="always")
+summary(episode.mod4[episode.mod4$max_dosage_6M_cat=="4.13-16",]$max_dosage_6M)
+
+
+episode.mod4$max_dosage_12M_cat = 
+  cut(episode.mod4$max_dosage_12M, 
+      breaks = c(0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40),
+      labels = c('1.0-4', '2.5-8', '3.9-12', '4.13-16', '5.17-20', '6.21-24', '7.25-28', '8.29-32', '9.33-36', '10.37-40'))
+
+# Double check
+summary(episode.mod4$max_dosage_12M)
+table(episode.mod4$max_dosage_12M_cat, useNA="always")
+summary(episode.mod4[episode.mod4$max_dosage_12M_cat=="4.13-16",]$max_dosage_12M)
+
+
+episode.mod4$max_dosage_18M_cat = 
+  cut(episode.mod4$max_dosage_18M, 
+      breaks = c(0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40),
+      labels = c('1.0-4', '2.5-8', '3.9-12', '4.13-16', '5.17-20', '6.21-24', '7.25-28', '8.29-32', '9.33-36', '10.37-40'))
+
+# Double check
+summary(episode.mod4$max_dosage_18M)
+table(episode.mod4$max_dosage_18M_cat, useNA="always")
+summary(episode.mod4[episode.mod4$max_dosage_18M_cat=="4.13-16",]$max_dosage_18M)
+
+```
+
+```{r}
+# Clean up
+rm(d_patient, episode.mod, episode.mod2,episode.mod3,
+   check.1M,check.3M,check.6M,check.12M)
+```
+
+
+```{r}
+# Save the data file for regression model
+fwrite(episode.mod4, paste(dat.folder,"Model data_18M_Sensitivity Day30.csv", sep=''))
+# 1,011,968
+
+```
+
+
+
+
+
