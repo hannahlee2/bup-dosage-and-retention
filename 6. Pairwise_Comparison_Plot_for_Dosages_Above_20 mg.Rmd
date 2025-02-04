@@ -1,0 +1,108 @@
+---
+title: "6. Pairwise Comparison Plot for Dosages Above 20 mg"
+output: html_document
+---
+
+```{r}
+# Load all the libraries
+library(data.table)
+library(dplyr)
+library(emmeans)
+library(ggplot2)
+library(grid)
+library(forcats)
+library(cowplot)
+library(patchwork)
+# Folder that store the data
+result.folder = "file path"
+```
+
+This code uses manually cleaned data.
+```{r}
+# Read in the data
+dat = fread(paste(result.folder, "pairwise_multivariable_M18_nochangedosage_cleaned.xlsx", sep=''))
+```
+
+```{r}
+dat <- dat %>%
+  mutate(contrast = paste0(contrast, " "))
+# Prepare data for plot
+contrast_levels <- c("32 mg vs 24 mg (reference) ", "40 mg vs 24 mg (reference) ", "40 mg vs 32 mg (reference) ")  
+outcome_period_levels <- c("1 month", "3 months", "6 months", "12 months", "18 months") 
+
+dat$`contrast` <- factor(dat$`contrast`, levels = rev(contrast_levels))
+dat$`Retention Outcome` <- factor(dat$`Retention Outcome`, levels = rev(outcome_period_levels))
+
+dat_tidied <- dat %>%
+  mutate(
+    Odds_Ratio = as.numeric(as.character(Odds_Ratio)),
+    Lower_CI = as.numeric(as.character(Lower_Cl)),
+    Upper_CI = as.numeric(as.character(Upper_Cl)),
+    Estimate_CI = sprintf("%.2f (%.2f, %.2f)", Odds_Ratio, Lower_Cl, Upper_Cl)
+  )
+min_val <- min(dat_tidied$Lower_Cl)
+max_val <- max(dat_tidied$Upper_Cl)
+
+```
+
+
+Pairwise association plot
+```{r}
+pairwise_plot <- ggplot(dat, aes(y = `Retention Outcome`, x = Odds_Ratio, color = `Retention Outcome`, group = `Retention Outcome`)) +
+  geom_line(size = 1) + 
+  geom_vline(xintercept = 1, colour = "gray50", linetype = "dashed") +
+  scale_x_continuous(
+    breaks = seq(0.8, 1.2, by = 0.2),
+    limits = c(0.8, 1.3),
+    trans = "log10"
+  ) +
+  geom_point(size = 3) + 
+  geom_errorbar(aes(xmin = Lower_Cl, xmax = Upper_Cl), linewidth = .5, height = .1) +
+  facet_wrap(~fct_rev(`contrast`), scales = "free_y", ncol=1, strip.position = "left") + 
+  labs(title = "Adjusted odds ratios of pairwise comparisons among 24, 32, and 40 mg", x = "Decreased retention       Increased retention", y = "Pairwise comparison") +
+  theme_minimal() +
+  theme(
+    legend.position = 'bottom',
+    legend.title=element_blank(),
+    panel.spacing = unit(1, "lines"),
+    axis.text.y = element_blank(),  
+    strip.text = element_text(size = 10),  
+    strip.text.y.left = element_text(angle = 0, hjust = 0, vjust = 1),
+    plot.title = element_text(face ="bold", size = 10, hjust = 0.5) 
+  ) +
+  theme(axis.title.x = element_text(hjust = 0.3, margin = margin(t=10)), axis.title.y = element_text(face = "bold", margin=margin(r=10))) +
+  guides(color = guide_legend(reverse = TRUE),
+  strip.placement = "outside")
+
+dat_table <- dat_tidied %>%
+  select(`Retention Outcome`, `contrast`, Estimate_CI) %>%
+  tidyr::pivot_longer(c(Estimate_CI), names_to = "stat") %>%
+  mutate(stat = factor(stat, levels = c("Estimate_CI")))
+
+pairwise_table <- ggplot(dat_table, aes(stat, `Retention Outcome`, label = value)) +
+  geom_text(size = 3.75) +
+  scale_x_discrete(position = "top", labels = c("aOR (95% CI)")) +
+  facet_wrap(~fct_rev(`contrast`), scales = "free_y", ncol=1, strip.position = "left", labeller = labeller(`contrast` = c(`21-24 vs 25-32` = "", `21-24 vs 33-40` = "", `25-32 vs 33-40` = ""))) +
+  labs(y = NULL, x = NULL) +
+  theme_classic() +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 12, face = "bold", color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y.left = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_text(size = 11),
+    plot.title = element_text(face = "bold", size = 11)
+  ) + ggtitle("") 
+
+pairwiseplot <- pairwise_plot + pairwise_table + plot_layout(widths = c(5, 2))
+
+ggsave(paste(result.folder,"Pairwise_Comparison_Plot_Dosages_Above_20_mg.svg", sep=''), plot= pairwiseplot, width = 8, height = 6)
+```
+ 
+

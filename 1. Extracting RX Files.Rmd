@@ -1,0 +1,181 @@
+---
+title: "Extracting RX Files"
+output: html_document
+---
+
+
+```{r}
+# Load all the libraries
+library(data.table)
+library(lubridate) 
+library(dplyr)
+library(AdhereR)
+
+# Folder that store the data
+dat.folder = "file path"
+```
+
+```{r}
+# Step 1:
+# Find relevant product IDs
+# Read in product information
+d_product = fread("file path")
+
+# Get the product IDs for the buprenorphine from the product data where the MKTED_PROD_NM matches
+Bup_productID_NM = d_product[MKTED_PROD_NM %in% c('BUPRENORPHIN/NALOX','SUBOXONE','BUPRENORPHINE HCL/NALOXON'),
+                             c("PRODUCT_ID", "MKTED_PROD_NM","USC_CD", "USC_DESC","STRNT_DESC", "DOSAGE_FORM_NM") ]
+
+# Check USC_CD codes
+table(Bup_productID_NM$USC_CD)
+# All records have USC_CD=78340
+
+# Remove USC_CD and USC_DESC
+Bup_productID_NM = Bup_productID_NM[,c("PRODUCT_ID", "MKTED_PROD_NM","STRNT_DESC", "DOSAGE_FORM_NM")]
+
+# Put the relevant product IDs into a list
+list_bup_PRODUCT_ID = Bup_productID_NM$PRODUCT_ID
+# 68 unique product_id
+
+rm(d_product)
+
+# Check strength
+table(Bup_productID_NM$STRNT_DESC)
+# We are hoping to see strength like {'2-0.5 MG', '4-1 MG', '8-2MG', '12-3 MG', '8-2 MG'}
+# In the future, we will extract the bup strength with {2, 4, 8, 12}
+```
+
+
+```{r}
+# Step 2:
+# Filter RXs with selected product IDs
+
+filenum_rx = seq(2014, 2021, 1)
+datanames_rx = paste("FACT_RX_", filenum_rx, sep='')
+
+
+for(i in 1:length(datanames_rx))
+{
+  assign (
+    datanames_rx[i], 
+    fread(file = paste("file path", datanames_rx[i], sep=""),
+          select = c("PATIENT_ID", "SVC_DT", "PRODUCT_ID","DSPNSD_QTY", "DAYS_SUPPLY_CNT","PAY_TYP_DESC"), quote="")
+    [PRODUCT_ID %in% list_bup_PRODUCT_ID]
+  )
+} 
+
+FACT_RX_2014_2021 = rbind(FACT_RX_2014, FACT_RX_2015, FACT_RX_2016, FACT_RX_2017, 
+                           FACT_RX_2018, FACT_RX_2019, FACT_RX_2020, FACT_RX_2021)
+
+# Merge in the product marketed name, form, and strength variables
+Rx_buprenorphine_2014_2021 = merge(FACT_RX_2014_2021, Bup_productID_NM, by="PRODUCT_ID", all.x = TRUE)
+
+# Save the data
+fwrite(Rx_buprenorphine_2014_2021, file=paste(dat.folder,"RX_buprenorphine_2014_2021_2024Apr10.csv",sep=''))
+
+```
+
+
+```{r}
+# Double check
+nrow(Rx_buprenorphine_2014_2021)
+
+# Check product names
+table(Rx_buprenorphine_2014_2021$MKTED_PROD_NM, useNA="always")
+
+# Check strength
+# We are hoping to see strength like {'2-0.5 MG', '4-1 MG', '8-2MG', '12-3 MG', '8-2 MG'}
+# In the future, we will extract the bup strength with {2, 4, 8, 12}
+table(Rx_buprenorphine_2014_2021$STRNT_DESC, useNA="always")
+
+```
+
+```{r}
+# Step 3: 
+# LRx data cleaning 
+
+d_rx = fread(paste(dat.folder,"RX_buprenorphine_2014_2021_2024Apr10.csv",sep=''))
+nrow(d_rx)
+# 16,315,575 obs
+
+# Convert service to date
+d_rx$SVC_DT_date = format(ymd(d_rx$SVC_DT), "%m/%d/%Y")
+
+# Order rows by SVC_DT
+setorder(d_rx, PATIENT_ID, SVC_DT)
+
+
+# Clean variable DAYS_SUPPLY_CNT
+
+# Check distribution of DAYS_SUPPLY_CNT and DSPNSD_QTY
+summary(d_rx$DAYS_SUPPLY_CNT)
+summary(d_rx$DSPNSD_QTY)
+
+quantile(d_rx$DAYS_SUPPLY_CNT, probs = c(0.5, 0.75, 0.95, 0.99, 0.995, 0.999,0.9995))
+quantile(d_rx$DSPNSD_QTY, probs = c(0.5, 0.75, 0.95, 0.99, 0.995, 0.999,0.9995))
+
+
+# Select records with DAYS_SUPPLY_CNT positive value and <=60
+nrow(d_rx[DAYS_SUPPLY_CNT==0 | DAYS_SUPPLY_CNT>60 | DSPNSD_QTY==0 | DSPNSD_QTY>168,])
+# 13,122
+d_rx_select = d_rx[DAYS_SUPPLY_CNT>0 & DAYS_SUPPLY_CNT<=60 & DSPNSD_QTY>0 & DSPNSD_QTY<=168,]
+nrow(d_rx_select)
+# 16,302,453
+
+summary(d_rx_select$DAYS_SUPPLY_CNT)
+summary(d_rx_select$DSPNSD_QTY)
+
+
+# Remove duplicated records
+d_rx_bup_rev = d_rx_select[!duplicated(d_rx_select)]
+# 0.16% duplicated records
+nrow(d_rx_bup_rev)/nrow(d_rx_select)*100
+# 16,276,713 obs
+
+# Save the data
+fwrite(d_rx_bup_rev, file=paste(dat.folder,"RX_buprenorphine_2014_2021_2024Apr10_cleaned.csv",sep=''))
+
+```
+
+```{r}
+# Step 4: 
+# Define treatment episodes
+d_rx_bup_rev = fread(paste(dat.folder,"RX_buprenorphine_2014_2021_2024Apr10_cleaned.csv",sep=''))
+nrow(d_rx_bup_rev)
+length(unique(d_rx_bup_rev$PATIENT_ID))
+
+gap = c(7,14,30,60)
+
+# Compute the treatment episodes:
+for (i in 1:length(gap)){
+  
+  Bup_episode=compute.treatment.episodes(
+    d_rx_bup_rev,
+    ID.colname="PATIENT_ID",
+    event.date.colname="SVC_DT_date",
+    event.duration.colname="DAYS_SUPPLY_CNT",
+    carryover.within.obs.window = TRUE, 
+    medication.change.means.new.treatment.episode = FALSE,
+    maximum.permissible.gap = gap[i], 
+    maximum.permissible.gap.unit = "days", 
+    followup.window.start = 0, 
+    followup.window.start.unit = "days",
+    #Just to allow long enough duration to include the medication carryover time
+    followup.window.duration = 365 * 24,  
+    followup.window.duration.unit = "days",
+    date.format = "%m/%d/%Y")
+  
+  fwrite(Bup_episode, 
+         file=paste(dat.folder, "Episode_gap ",gap[i], "_2024Apr15.csv",sep=""))
+  
+}
+
+```
+
+
+```{r}
+# Double check
+episode.gap14 = fread(paste(dat.folder,"Episode_gap 14_2024Apr15.csv",sep=''))
+summary(episode.gap14$episode.duration)
+length(unique(episode.gap14$PATIENT_ID))
+```
+

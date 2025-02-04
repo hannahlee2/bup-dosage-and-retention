@@ -1,0 +1,184 @@
+---
+title: "No change dosage Sensitivity Day7"
+output: html_document
+---
+
+```{r}
+# Load all the libraries
+library(data.table)
+library(dplyr)
+library(emmeans)
+
+# Folder that store the data
+dat.folder = "file path"
+result.folder = "file path"
+```
+
+
+```{r}
+# Read in the data
+dat = fread(paste(dat.folder,"Model data_18M_Sensitivity Day7.csv", sep=''))
+nrow(dat)
+```
+
+
+SAMPLE RESTRICTION:
+Keep the 180 washout period
+```{r}
+# Check the frequencies for the washout indicator 
+table(dat$keep_washout180, useNA="always")
+
+# Keep the washout indicator=1
+dat = dat[dat$keep_washout180==1,]
+nrow(dat)
+# 706196
+```
+
+
+ADDITIONAL RESTRICTION
+```{r}
+# Only keep those didn't change dosage throughout the investigated period 
+nochange = dat %>%
+  filter(max_dosage_1M_cat == max_dosage_3M_cat & 
+         max_dosage_3M_cat == max_dosage_6M_cat & 
+         max_dosage_6M_cat == max_dosage_12M_cat & 
+         max_dosage_12M_cat == max_dosage_18M_cat)
+# 635227
+
+nrow(nochange)/nrow(dat)*100
+# 89.95% did not change
+```
+
+
+
+Check and regroup the dose variables
+```{r}
+# Regrouping for a single variable
+nochange <- nochange %>%
+  mutate(
+    max_dosage_1M_cat_grouped = case_when(
+      max_dosage_1M_cat %in% c("7.25-28", "8.29-32") ~ "7.25-32",
+      max_dosage_1M_cat %in% c("9.33-36", "10.37-40") ~ "8.33-40",
+      TRUE ~ max_dosage_1M_cat # Retain other categories
+    )
+  )
+
+# List of variables to regroup
+variables <- c('max_dosage_1M_cat', 'max_dosage_3M_cat', 
+               'max_dosage_6M_cat', 'max_dosage_12M_cat', 
+               'max_dosage_18M_cat')
+
+# Apply regrouping to each variable
+nochange <- nochange %>%
+  mutate(across(all_of(variables), ~ case_when(
+    . %in% c("7.25-28", "8.29-32") ~ "7.25-32",
+    . %in% c("9.33-36", "10.37-40") ~ "8.33-40",
+    TRUE ~ . # Retain other categories
+  ), .names = "{.col}_grouped"))
+
+# Double check
+table(nochange$max_dosage_1M_cat_grouped, nochange$max_dosage_1M_cat)
+table(nochange$max_dosage_3M_cat_grouped, nochange$max_dosage_3M_cat)
+table(nochange$max_dosage_6M_cat_grouped, nochange$max_dosage_6M_cat)
+table(nochange$max_dosage_12M_cat_grouped, nochange$max_dosage_12M_cat)
+table(nochange$max_dosage_18M_cat_grouped, nochange$max_dosage_18M_cat)
+
+```
+
+
+Change reference levels for key variables
+```{r}
+# Dosage categories
+# Define the common levels
+common_levels = c('4.13-16', '1.0-4', '2.5-8', '3.9-12', '5.17-20', '6.21-24', '7.25-32', '8.33-40')
+
+# List of column names to transform
+columns_to_transform = c('max_dosage_1M_cat_grouped', 'max_dosage_3M_cat_grouped', 
+                         'max_dosage_6M_cat_grouped', 'max_dosage_12M_cat_grouped', 
+                         'max_dosage_18M_cat_grouped')
+
+# Apply factor transformation with common levels to each specified column
+for (col in columns_to_transform) {
+  nochange[[col]] = factor(nochange[[col]], levels = common_levels)
+}
+
+
+# Models adjust for race, PAT_GENDER_CD, payment, year
+nochange$race = factor(nochange$race,
+                  levels=c("WHITE","BLACK","HISPANIC","ASIAN - OTHER","UNKNOWN"))
+
+nochange$PAT_GENDER_CD = factor(nochange$PAT_GENDER_CD, levels=c("M","F"))
+
+nochange$payment = factor(nochange$payment, levels=c("THIRD PARTY","CASH","MEDICAID","MEDICARE"))
+
+# double check
+# table(nochange$max_dosage_18M_cat, useNA="always")
+
+```
+
+
+Remove datasets that are no longer needed
+```{r}
+rm(dat, col, columns_to_transform, common_levels)
+```
+
+
+
+
+
+
+Multivariable logistic regression
+```{r}
+# Define the outcome periods and dosage categories
+outcome_periods <- c("1M", "3M", "6M", "12M", "18M")
+dosage_categories <- c("max_dosage_1M_cat_grouped", "max_dosage_3M_cat_grouped", 
+                       "max_dosage_6M_cat_grouped", "max_dosage_12M_cat_grouped",
+                       "max_dosage_18M_cat_grouped")
+
+# Initialize a list to store results
+results_list <- list()
+
+# Loop over each outcome period
+for (i in seq_along(outcome_periods)) {
+  outcome <- outcome_periods[i]
+  dosage <- dosage_categories[i]
+
+  # Fit the generalized linear model
+  model_formula <- as.formula(
+    paste0("outcome.", outcome, " ~ ", dosage, " + age_cat + race + PAT_GENDER_CD + payment + year")
+  )
+  result <- glm(model_formula, data = nochange, family = "binomial")
+  
+  # Extract coefficients and calculate odds ratios and confidence intervals
+  coeff_df <- as.data.frame(summary(result)$coefficients)
+  coeff_df <- coeff_df[-1,]  # Exclude the intercept
+  
+  or_df <- as.data.frame(
+    cbind("Odds ratio" = exp(coef(result)), exp(confint.default(result)))
+  )
+  or_df <- or_df[-1,]  # Exclude the intercept
+  
+  # Combine the coefficient and odds ratio data frames
+  out_coeff <- bind_cols(coeff_df, or_df)
+  
+  # Add a column indicating the outcome period
+  out_coeff$Outcome_Period <- outcome
+  
+  # Store the result in the list
+  results_list[[outcome]] = out_coeff
+  
+  # Optionally remove intermediate variables to save memory
+  rm(result, coeff_df, or_df)
+}
+
+# Concatenate all data frames in the list
+combined_results <- do.call(rbind, results_list)
+
+# Write the combined results to a CSV file
+combined_output_filename <- paste0(result.folder, "combined_multivariable_M18_nochangedosage_Sensitivity Day7.csv")
+fwrite(combined_results, combined_output_filename, row.names = TRUE)
+
+# Optionally clean up memory
+rm(combined_results, results_list, combined_output_filename, dosage, dosage_categories,
+   i, model_formula, outcome, out_coeff, outcome_periods)
+```
